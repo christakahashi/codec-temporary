@@ -268,24 +268,33 @@ class BaseNBlockCodec:
 
         Returns:
             bytes: The decoded data.
+            outer erasures: list of erasures in outer code.
+            outer errors: list of errors in outer code.
+            inner errors: list of number of errors in inner code by strand index. -1 -> strand not present.
 
         Raises:
             None
         """
         # inner decode
         ## TODO: handle erasures in inner code.
-        chunked_data = [self.inner_coder.decode(d).tolist() for d in data]
+        chunked_data = [self.inner_coder.decode(d,errors=True) for d in data]
+        
 
         # handle outer decode
         ordered_chunks = [None] * self.n_strands
+        chunk_errors = [-1] * self.n_strands
         for chunk in chunked_data:
-            chunk_int = _baseN_to_int(chunk, self.inner_coder.field.order)
+            chunk_int = _baseN_to_int(chunk[0].tolist(), self.inner_coder.field.order)
             chunk_index = chunk_int >> (self.data_chunk_size * 8) - index_start
             _mask = (2 ** (self.data_chunk_size * 8)) - 1
             chunk_int = chunk_int & _mask
             chunk_bytes = chunk_int.to_bytes(self.data_chunk_size, 'little')
             #print(chunk_index)
-            ordered_chunks[chunk_index] = chunk_bytes
+            try:
+              ordered_chunks[chunk_index] = chunk_bytes
+              chunk_errors[chunk_index] = chunk[1]
+            except IndexError:
+              logging.info("strand index out of bounds:" + str(chunk_index))
 
         # identify erasures
         erasures = []
@@ -312,7 +321,8 @@ class BaseNBlockCodec:
         errors = []
         for i, pos in enumerate(data_errata_col_pos):
             for strand in pos:
-                errors.append((strand, i))
+                if (not(strand in erasures)):
+                    errors.append((strand, i))
         errors.sort(key=lambda x: x[0])
 
         # unlikely to find an error since it would have to pass the inner code.
@@ -322,7 +332,7 @@ class BaseNBlockCodec:
             else:
                 logging.warning("Outer code errors found on strand {}, byte {}.".format(*e))
 
-        return data_decoded
+        return data_decoded, erasures, errors, chunk_errors
 
 
 #convert base N into DNA.
