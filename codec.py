@@ -218,7 +218,6 @@ class BaseNBlockCodec:
             assert len(data_np)%self.data_chunk_size == 0
             data_np = data_np.reshape(-1,self.data_chunk_size)
         elif self.outer_coder.c_exp==16:
-            print(len(data))
             data_np = np.frombuffer(data,dtype=np.uint16)
             if self.data_chunk_size%2!=0:
                 raise ValueError("data_chunk_size must be even for 16 bit outer code.")
@@ -251,9 +250,7 @@ class BaseNBlockCodec:
             chunk = _int_to_baseN(chunk,self.inner_coder.field.order,length=self.inner_coder.k)
             chunks.append(chunk)
 
-        #print(chunks)
         #apply inner code
-        print(chunks[0])
         ic_chunks= [self.inner_coder.encode(c).tolist() for c in chunks] 
 
         return ic_chunks
@@ -304,9 +301,9 @@ class BaseNBlockCodec:
                 ordered_chunks[i] = b'\x00' * self.data_chunk_size  # fill in erasures with zeros
 
         if self.outer_coder.c_exp==8:
-           outer_dtype = np.uint8
+            outer_dtype = np.uint8
         elif self.outer_coder.c_exp==16:
-           outer_dtype = np.uint16
+            outer_dtype = np.uint16
         else:
             raise ValueError("Unsupported outer code byte size.")
         data_np_encoded = np.array([np.frombuffer(c, dtype=outer_dtype) for c in ordered_chunks]).transpose()
@@ -347,23 +344,22 @@ def find_avoid(seq:str, avoids:list)->tuple[int]:
             return loc,len(a)
     return -1,0
 
-def _longest_match(a:str,b:str):
-  max_match = 0
-  for i in range(len(a)): 
-    match = 0
-    for offset in range(min(len(a)-i,len(b))):
-      if a[i+offset] == b[offset]:
-        match +=1
-      else:
-        match = 0
-      if match > max_match:
-        max_match = match
-  return max_match
-
 def longest_match(a:str,b:str):
-  A = a.upper()
-  B = b.upper()
-  return max(_longest_match(A,B),_longest_match(B,A))
+    def _longest_match(a:str,b:str):
+        max_match = 0
+        for i in range(len(a)): 
+            match = 0
+            for offset in range(min(len(a)-i,len(b))):
+                if a[i+offset] == b[offset]:
+                    match +=1
+                else:
+                    match = 0
+                if match > max_match:
+                    max_match = match
+        return max_match
+    A = a.upper()
+    B = b.upper()
+    return max(_longest_match(A,B),_longest_match(B,A))
 
 #Returns the reverse complement of a DNA sequence.
 def reverse_complement(dna_sequence: str) -> str:
@@ -378,31 +374,45 @@ def longest_binder(a:str,b:str):
 
 
 
-def b32_to_DNA_optimize(file_data:list[list[int]],words:list[str], alternate_words:list[str], penalty_fn:Union[Callable[[str],int],None]=None)->list[str]:
-  """ penalty_fn(DNA_seq:str)->int"""
+def b32_to_DNA_optimize(file_data:list[list[int]],words:list[str], alternate_words:list[str], mask:Union[list[int],None]=None, penalty_fn:Union[Callable[[str],int],None]=None)->list[str]:
+  """ 
+    TODO: rename to bN_to_DNA_optimize, and add test.
+    mask: list of ints. 0 for word, 1 for alternate word, -1 for don't care.  None for no mask.
+    penalty_fn: function that takes a DNA sequence and returns a score.  penalty_fn(DNA_seq:str)->int
+  """
   return [b32_to_DNA_optimize_single(x,words,alternate_words,penalty_fn=penalty_fn) for x in file_data]
-   
+
 
 def b32_to_DNA_optimize_single(strand_data:list[int],words:list[str], alternate_words:list[str], mask:Union[list[int],None]=None ,penalty_fn=None)->str:
   """
-
+    TODO: rename to bN_to_DNA_optimize_single
     TODO: add mask support.
     mask: list of ints. 0 for word, 1 for alternate word, -1 for don't care.  None for no mask.
   """
+  if mask is not None:
+    mutable_ind = np.where(np.array(mask)==-1)
+    #raise NotImplementedError("mask not implemented yet")
+  else:
+    mutable_ind = np.arange(len(strand_data))
+    mask = mask.copy()
+    mask[mutable_ind] = 0
+  
   strand_data = np.array(strand_data)
   words = np.array(list(zip(words,alternate_words)),dtype="S")
   picks = np.zeros(len(strand_data),dtype=np.uint8)
+  picks[0:len(mask)] = mask
   dna_seq = b"".join(words[strand_data,picks])
   if penalty_fn is None:
      return dna_seq,0
-  score = penalty_fn(dna_seq)  
+  score = penalty_fn(dna_seq)
 
+  #greedy search, stop when you can't find a better solution one step away.
   icount = 0
   while True:
     iteration_best_picks = picks.copy()
     iteration_best_score = score
     iteration_dna_seq = dna_seq
-    for i in range(len(picks)):
+    for i in mutable_ind:
       new_picks = picks.copy()
       new_picks[i] = not new_picks[i]
       new_dna_seq = b"".join(words[strand_data,new_picks])
@@ -447,29 +457,162 @@ def b32_to_DNA(file_data:list[list[int]],words:list[str], alternate_words:list[s
         dna.append(_s)
     return dna
 
-def dna_to_b32(dna: Union[list[str],list[bytes]] ,words:list[str], alternate_words:list[str])->list[int]:
-    """ takes a list of strings and converts them to a list of b32 ints"""
+def dna_to_bN(dna: Union[list[str],list[bytes]] ,words:list[str], alternate_words:list[str])->list[int]:
+    """ takes a list of strings and converts them to a list of base N ints"""
 
     if isinstance(dna[0],bytes):
         dna = [x.decode() for x in dna]
 
     wordlen = len(words[0])
     #build the reverse lookup table
-    b32lut = {}
+    bNlut = {}
     for ind in range(len(words)):
-        b32lut[words[ind]] = ind
-        b32lut[alternate_words[ind]] = ind
+        bNlut[words[ind]] = ind
+        bNlut[alternate_words[ind]] = ind
 
 
-    b32datalist = []
+    bNdatalist = []
     for d in dna:
-        b32data = []
+        bNdata = []
         for ind in range(0,len(d),wordlen):
             w = d[ind:ind+wordlen] 
-            b32data.append(b32lut[w])
-        b32datalist.append(b32data)
-    return b32datalist
+            bNdata.append(bNlut[w])
+        bNdatalist.append(bNdata)
+    return bNdatalist
+
+def dna_to_b32(dna: Union[list[str],list[bytes]] ,words:list[str], alternate_words:list[str])->list[int]:
+    assert len(words) == 32
+    return dna_to_bN(dna,words,alternate_words)
 
 
-if __name__ == "__main__":
-    pass
+def __is_pow_two(n: int):
+    """Returns if a number is a power of two."""
+    return (n > 0) and ((n & ( ~(n-1) )) == n)
+
+def dna_to_bytes(dna_seq: str, words: list[str]=_default_b32_alphabet, alternate_words: list[str]=_default_b32_alphabet) ->  tuple[bytes, list[int]]:
+    """Convert a DNA sequence to bytes with zero padding.
+
+    This function takes a DNA sequence and converts it into a byte representation.
+    It assumes the alphabet length and base are the same.
+    The function ensures that the DNA sequence is properly decoded into bytes, with
+    zero padding applied as necessary to align the data.
+
+    Args:
+        dna_seq (str): The DNA sequence to be converted.
+        words (list[str]): The primary set of base words used, in order, for encoding.
+        alternate_words (list[str]): The alternate (aka synonymous) set of words used, in order, for encoding.
+
+    Returns:
+        bytes: The byte representation of the DNA sequence.
+        list[int]: a mask for alternate words.  0 for word, 1 for alternate word, -1 for don't care.
+    """
+    if len(words) != len(alternate_words):
+        raise ValueError("words and alternate_words must be the same length")
+    if len(words) < 2:
+        raise ValueError("words and alternate_words must be at least 2 long")
+    if len(dna_seq) % len(words[0]) != 0:
+        raise ValueError("DNA sequence length must be a multiple of the word length")
+
+    base = len(words)
+    word_len = len(words[0])
+
+    #create a mask for the DNA sequence
+    mask = [0]*(len(dna_seq)//word_len)
+    for i in range(len(mask)):
+        word = dna_seq[i*word_len:(i+1)*word_len]
+        if word in words:
+            mask[i] = 0
+        elif word in alternate_words:
+            mask[i] = 1
+        else:
+            raise ValueError("DNA sequence contains invalid word: {}".format(word))
+
+    #convert the DNA sequence to base N
+    bN_seq = dna_to_bN([dna_seq], words, alternate_words)[0]
+    int_value = _baseN_to_int(bN_seq, base)
+    num_words = len(dna_seq)/len(words[0])
+    num_bits = num_words * np.log2(base)
+    if __is_pow_two(base):
+        num_bits = int(np.round(num_bits)) #just incase log2 returns with a rounding error.
+    else:
+        num_bits = int(np.ceil(num_bits))
+    num_bytes = (num_bits + 7) // 8 #only works if num_bits is an int
+    
+    return int_value.to_bytes(num_bytes, 'little'), mask
+
+def chunk(b:bytes|bytearray,size:int):
+    """break into list of size sized chunks"""
+    chunks = []
+    for i in range(0, len(b), size):
+        chunks.append( b[i:i + size] )
+    return chunks
+
+def insert_bytes(data:bytes, insert:bytes, chunk_len:int, num_inserts:int) -> bytes:
+    """Insert bytes into a byte array num_inserts times at chunk_len intervals.  i.e. 
+       the returned bytes will have the insert bytes every chunk_len bytes.
+
+    Args:
+        data (bytes): The original byte array.
+        insert (bytes): The bytes to be inserted.
+        chunk_len (int): The length of each chunk.
+        num_inserts (int): The number of insertions to be made.
+
+    Returns:
+        bytes: A list of byte chunks with the inserted bytes.
+
+    See also:
+        remove_bytes: The inverse of this function.
+    """
+    data = bytearray(data)
+    for i in range(num_inserts):
+        ins_index = i * chunk_len
+        data[ins_index:ins_index] = insert
+    return bytes(data)
+
+def pad_data(data:bytes,block_size:int,padding_data:bytes|str = "random") -> bytes:
+    """Pad data to a multiple of block_size.  The padding is added to the end of the data.
+    
+    Args:
+        data (bytes): bytes object to be padded.
+        block_size (int): The block size to pad to. (return bytes length % block_size == 0)
+        padding_data (bytes|str, optional): The padding data to be added. Defaults to "random".
+    Returns:
+        bytes: The padded bytes.
+    """
+    padding_size = block_size - len(data) % block_size 
+    if isinstance(padding_data,bytes):
+        if len(padding_data) < padding_size:
+            raise ValueError("padding data is too small")
+    if isinstance(padding_data,str):
+        if padding_data == "random":
+            padding_data = np.random.bytes(padding_size)
+        else:
+            raise ValueError("padding data must be bytes or 'random'")
+    return data + padding_data[:padding_size]
+
+def remove_bytes(data:bytes, insert:int|bytes, chunk_len:int, num_inserts:int) -> bytes:
+    """Remove bytes from a byte array at specified intervals.  This is the inverse of insert_bytes.
+
+    Args:
+        data (bytes): The original byte array.
+        insert_len (int|bytes): The length of the inserted bytes to be removed.  If insert_len 
+            is bytes, its length will be used, and the contents of the deleted bytes will be checked.
+        num_inserts (int): The number of insertions to be removed.
+
+    Returns:
+        bytes: The modified byte array with the inserted bytes removed.
+    """
+    if isinstance(insert,bytes):
+        insert_len = len(insert)
+    else:
+        insert = None
+    
+    data = bytearray(data)
+    for i in reversed(range(num_inserts)):
+        ins_index = i * chunk_len
+        if insert is not None:
+            if data[ins_index:ins_index + insert_len] != insert:
+                raise ValueError("insert bytes do not match bytes to be removed")
+        del data[ins_index:ins_index + insert_len]
+    return bytes(data)
+
