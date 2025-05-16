@@ -2,7 +2,7 @@ import os
 import struct
 import itertools
 import logging
-from typing import Optional,Union, Callable  #requires python 3.5 or later
+from typing import Optional,Union, Callable, Tuple  #requires python 3.5 or later
 
 
 import numpy as np
@@ -255,7 +255,7 @@ class BaseNBlockCodec:
 
         return ic_chunks
 
-    def decode(self, data: list[list[int]], index_start: int = 0) -> bytes:
+    def decode(self, data: list[list[int]], index_start: int = 0) -> Tuple[bytes,ArrayLike,ArrayLike,ArrayLike]:
         """
         Decodes the given data.
 
@@ -336,7 +336,7 @@ class BaseNBlockCodec:
 _default_b32_alphabet = ['GCT', 'ACT', 'AGT', 'CTC', 'TGC', 'GAG', 'GCA', 'ATG', 'AGA', 'AGC', 'CAC', 'CAT', 'CAG', 'CTG', 'TCT', 'GAC', 'GTC', 'GTG', 'ACA', 'ACG', 'ATC', 'CTA', 'CGA', 'CGT', 'TAC', 'TAG', 'TCA', 'TCG', 'TGA', 'TGT', 'GAT', 'GTA']
 _default_b32_alphabet_alt = ['ATA', 'AAC', 'CCT', 'TAT', 'CCG', 'TGG', 'CGC', 'CGG', 'GTT', 'GGT', 'GCG', 'TCC', 'CCA', 'GGA', 'ACC', 'AGG', 'TAA', 'GCC', 'AAA', 'CCC', 'GGG', 'GGC', 'TTA', 'TTT', 'GAA', 'AAG', 'CTT', 'TTG', 'TTC', 'AAT', 'CAA', 'ATT']
 
-def find_avoid(seq:str, avoids:list)->tuple[int]:
+def find_avoid(seq:str, avoids:list)->tuple[int,int]:
     """find index and length of avoided sequence """
     for a in avoids:
         loc = seq.find(a)
@@ -374,30 +374,37 @@ def longest_binder(a:str,b:str):
 
 
 
-def b32_to_DNA_optimize(file_data:list[list[int]],words:list[str], alternate_words:list[str], mask:Union[list[int],None]=None, penalty_fn:Union[Callable[[str],int],None]=None)->list[str]:
+def b32_to_DNA_optimize(file_data:ArrayLike,words:list[str], alternate_words:list[str], mask:Union[ArrayLike,None]=None, penalty_fn:Union[Callable[[str],int],None]=None)->list[str]:
   """ 
     TODO: rename to bN_to_DNA_optimize, and add test.
+    file_data: 2d list of integral types (symbols)
     mask: list of ints. 0 for word, 1 for alternate word, -1 for don't care.  None for no mask.
     penalty_fn: function that takes a DNA sequence and returns a score.  penalty_fn(DNA_seq:str)->int
   """
   return [b32_to_DNA_optimize_single(x,words,alternate_words,penalty_fn=penalty_fn) for x in file_data]
 
 
-def b32_to_DNA_optimize_single(strand_data:list[int],words:list[str], alternate_words:list[str], mask:Union[list[int],None]=None ,penalty_fn=None)->str:
+def b32_to_DNA_optimize_single(strand_data:ArrayLike, words:list[str], alternate_words:list[str], mask:Union[ArrayLike,None]=None ,penalty_fn=None)->Tuple[bytes,int]:
   """
     TODO: rename to bN_to_DNA_optimize_single
     TODO: add mask support.
+    strand_data: 1d list of integral types
     mask: list of ints. 0 for word, 1 for alternate word, -1 for don't care.  None for no mask.
   """
+  strand_data = np.array(strand_data)
+  
   if mask is not None:
-    mutable_ind = np.where(np.array(mask)==-1)
+    mask = np.array(mask)
+    _m = np.full(len(strand_data),-1,dtype=np.int8)
+    _m[:len(mask)] = np.array(mask.copy()) #Probably don't need this copy.
+    mask = _m
+    mutable_ind = np.where(mask==-1)
+    mask[mutable_ind] = 0
     #raise NotImplementedError("mask not implemented yet")
   else:
+    mask = np.zeros(len(strand_data),dtype=np.uint8)
     mutable_ind = np.arange(len(strand_data))
-    mask = mask.copy()
-    mask[mutable_ind] = 0
-  
-  strand_data = np.array(strand_data)
+    
   words = np.array(list(zip(words,alternate_words)),dtype="S")
   picks = np.zeros(len(strand_data),dtype=np.uint8)
   picks[0:len(mask)] = mask
@@ -407,6 +414,7 @@ def b32_to_DNA_optimize_single(strand_data:list[int],words:list[str], alternate_
   score = penalty_fn(dna_seq)
 
   #greedy search, stop when you can't find a better solution one step away.
+  #this may end on a local minimum.
   icount = 0
   while True:
     iteration_best_picks = picks.copy()
